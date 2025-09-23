@@ -1,5 +1,7 @@
 # Water Level IoT Simulator
 
+> 📖 **中文版本**: [README_ZH.md](README_ZH.md) - Chinese version of this documentation
+
 This directory contains Python-based water level IoT device simulators for simulating water level sensor data and transmitting it to EMQX Broker via MQTT protocol.
 
 ## File Descriptions

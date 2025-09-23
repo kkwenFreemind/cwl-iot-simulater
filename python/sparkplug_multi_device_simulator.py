@@ -1,7 +1,47 @@
 #!/usr/bin/env python3
 """
-多設備 Sparkplug B 水位計模擬器
-同時模擬多個設備並遵循 Sparkplug B 規範
+Multi-Device Sparkplug B Water Level Simulator
+
+Concurrent simulation framework for multiple Sparkplug B compliant water level
+monitoring devices. This simulator manages multiple IoT devices running in
+parallel threads, each maintaining independent MQTT connections and generating
+realistic sensor data according to the Eclipse Sparkplug B specification.
+
+Key Features:
+    - Concurrent multi-device simulation with threading
+    - Full Sparkplug B protocol compliance across all devices
+    - Device-specific simulation parameters and environmental variations
+    - Independent MQTT connections with authentication
+    - Sequence number management per device
+    - Database schema alignment with iot_metric_definitions table
+    - Graceful shutdown handling and error recovery
+
+Technical Specifications:
+    - Water level measurement in centimeters (Float precision)
+    - Battery voltage monitoring in volts (3.0V-4.2V range)
+    - Signal strength measurement in dBm (-100dBm to -30dBm range)
+    - Sparkplug B sequence number management (0-255 rotation per device)
+    - MQTT QoS 1 reliable message delivery
+    - Configurable transmission intervals per device
+
+Author: Chang Xiu-Wen, AI-Enhanced
+Version: 1.0.0
+Date: 2025-09-23
+License: MIT
+
+Dependencies:
+    - paho-mqtt: MQTT client library for Python
+    - threading: Concurrent execution framework
+    - json: JSON data serialization
+    - math: Mathematical functions for realistic simulation
+
+Usage:
+    python sparkplug_multi_device_simulator.py
+
+    Or import as module:
+    from sparkplug_multi_device_simulator import SparkplugBMultiDeviceSimulator
+    simulator = SparkplugBMultiDeviceSimulator(broker_host='localhost', broker_port=1883)
+    simulator.start_all_simulators(duration_minutes=15)
 """
 
 import json
@@ -18,13 +58,52 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class SparkplugBMultiDeviceSimulator:
+    """
+    Multi-device Sparkplug B water level simulator manager.
+    
+    Coordinates concurrent simulation of multiple Sparkplug B compliant water
+    level monitoring devices. Each device operates independently with unique
+    characteristics, MQTT connections, and simulation parameters while maintaining
+    protocol compliance and database schema alignment.
+    
+    Key Features:
+        - Concurrent device simulation using threading
+        - Independent MQTT broker connections per device
+        - Device-specific configuration and authentication
+        - Coordinated startup and shutdown procedures
+        - Comprehensive logging and error handling
+        
+    Attributes:
+        broker_host (str): MQTT broker hostname for all devices
+        broker_port (int): MQTT broker port for all devices
+        simulators (list): List of SparkplugBDevice simulator instances
+        running (bool): Flag indicating active simulation state
+        device_configs (list): Pre-configured device configuration dictionaries
+        
+    Thread Safety:
+        Designed for thread-safe operations with independent device threads.
+        Coordinator manages lifecycle through proper synchronization mechanisms.
+    """
+    
     def __init__(self, broker_host='localhost', broker_port=1883):
         """
-        初始化多設備 Sparkplug B 模擬器
+        Initialize the multi-device Sparkplug B simulator coordinator.
+        
+        Sets up the central coordinator with MQTT broker connection parameters
+        and initializes the device configuration array. Pre-configures device
+        settings including authentication credentials, telemetry topics, and
+        simulation parameters for each Sparkplug B compliant device instance.
         
         Args:
-            broker_host (str): MQTT Broker 主機地址
-            broker_port (int): MQTT Broker 端口
+            broker_host (str, optional): MQTT broker hostname or IP address.
+                Defaults to 'localhost' for local development environments.
+            broker_port (int, optional): MQTT broker connection port.
+                Defaults to 1883 (standard MQTT port).
+                
+        Device Configuration:
+            Each device is pre-configured with unique identifiers, authentication
+            credentials, and location-specific parameters to simulate real-world
+            IoT deployment scenarios with multiple monitoring points.
         """
         self.broker_host = broker_host
         self.broker_port = broker_port
@@ -54,7 +133,20 @@ class SparkplugBMultiDeviceSimulator:
         ]
         
     def create_simulators(self):
-        """為每個設備創建 Sparkplug B 模擬器實例"""
+        """
+        Create and initialize Sparkplug B simulator instances for all devices.
+        
+        Instantiates SparkplugBDevice objects for each device configuration,
+        assigns unique device indices, and configures MQTT broker connection
+        parameters. Prepares all device simulators for concurrent Sparkplug B
+        compliant operation with independent simulation parameters.
+        
+        Device Differentiation:
+            - Unique device indices for identification
+            - Location-specific base water levels
+            - Independent MQTT authentication credentials
+            - Device-specific simulation intervals and variations
+        """
         for i, config in enumerate(self.device_configs):
             config.update({
                 'broker_host': self.broker_host,
@@ -64,7 +156,28 @@ class SparkplugBMultiDeviceSimulator:
             self.simulators.append(simulator)
             
     def start_all_simulators(self, duration_minutes=None):
-        """啟動所有設備模擬器"""
+        """
+        Launch all configured Sparkplug B device simulators concurrently.
+        
+        Initializes simulator instances, starts the simulation flag, and creates
+        individual threads for each device. Each Sparkplug B device simulator
+        runs in its own thread with independent MQTT connections and data generation
+        cycles, maintaining full protocol compliance.
+        
+        Args:
+            duration_minutes (int, optional): Simulation duration in minutes.
+                If None, simulation runs indefinitely until interrupted.
+                
+        Thread Management:
+            - Creates daemon threads for automatic cleanup on process termination
+            - Names threads with device client IDs for debugging and monitoring
+            - Joins all threads to ensure synchronized completion
+            
+        Sparkplug B Compliance:
+            - Independent sequence number management per device
+            - Protocol-compliant payload generation
+            - QoS 1 message delivery guarantees
+        """
         self.create_simulators()
         self.running = True
         
@@ -90,20 +203,78 @@ class SparkplugBMultiDeviceSimulator:
             self.stop_all_simulators()
             
     def stop_all_simulators(self):
-        """停止所有模擬器"""
+        """
+        Gracefully terminate all running Sparkplug B device simulators.
+        
+        Sets the running flag to False and calls the stop method on each
+        simulator instance. Ensures proper MQTT disconnection and thread
+        termination for all Sparkplug B compliant devices.
+        
+        Shutdown Sequence:
+            - Atomic flag update ensures immediate visibility across threads
+            - Individual simulator stop methods handle device-specific cleanup
+            - Maintains Sparkplug B protocol compliance during shutdown
+        """
         self.running = False
         for simulator in self.simulators:
             simulator.stop()
 
 
 class SparkplugBDevice:
+    """
+    Individual Sparkplug B compliant water level monitoring device simulator.
+    
+    Represents a single IoT water level sensor device that generates realistic
+    environmental monitoring data according to the Eclipse Sparkplug B specification.
+    Each device instance has unique characteristics, maintains independent MQTT
+    connections, and generates protocol-compliant telemetry data.
+    
+    Key Features:
+        - Full Sparkplug B protocol compliance with metric aliases and sequence numbers
+        - Device-specific simulation parameters and environmental variations
+        - Independent MQTT connectivity with authentication and QoS handling
+        - Realistic sensor data generation with mathematical models
+        - Database schema alignment with iot_metric_definitions table
+    
+    Attributes:
+        device_config (dict): Complete device configuration including MQTT settings
+        device_index (int): Unique identifier for this device instance
+        running (bool): Flag indicating active simulation state
+        client (mqtt.Client): MQTT client instance for broker communication
+        seq_number (int): Sparkplug B sequence number (0-255) for this device
+        
+    Thread Safety:
+        Designed for concurrent execution in multi-threaded environments.
+        Each device maintains independent MQTT connections and simulation state.
+    """
+    
     def __init__(self, device_config, device_index=1):
         """
-        單個 Sparkplug B 水位計設備模擬器
+        Initialize a Sparkplug B compliant water level monitoring device.
+        
+        Sets up the device with unique configuration, MQTT credentials, and
+        simulation parameters. Each device instance is configured with
+        device-specific characteristics to simulate realistic IoT deployment
+        scenarios with varying environmental conditions and monitoring intervals.
         
         Args:
-            device_config (dict): 設備配置
-            device_index (int): 設備索引
+            device_config (dict): Device configuration dictionary containing:
+                - device_id (str): Unique device identifier (UUID)
+                - client_id (str): MQTT client identifier
+                - username (str): MQTT authentication username
+                - password (str): MQTT authentication password
+                - topic (str): MQTT topic for telemetry publishing
+                - base_level (float, optional): Base water level in meters (default: 1.5)
+                - location (str, optional): Device deployment location
+                - broker_host (str): MQTT broker hostname
+                - broker_port (int): MQTT broker port number
+            device_index (int, optional): Sequential device index for differentiation.
+                Defaults to 1.
+                
+        Sparkplug B Configuration:
+            - Independent sequence number initialization
+            - Metric aliases aligned with database schema
+            - Device-specific simulation parameters
         """
         self.device_config = device_config
         self.device_index = device_index
@@ -335,7 +506,34 @@ class SparkplugBDevice:
 
 
 def main():
-    """主函數 - 啟動多設備 Sparkplug B 模擬器"""
+    """
+    Main entry point for the multi-device Sparkplug B water level simulator.
+    
+    Initializes and starts the multi-device Sparkplug B water level monitoring
+    simulation with default MQTT broker configuration. Demonstrates concurrent
+    operation of multiple Sparkplug B compliant devices with independent MQTT
+    connections and protocol-compliant data transmission.
+    
+    Configuration:
+        - Broker Host: localhost (modify for production deployment)
+        - Broker Port: 1883 (standard MQTT port)
+        - Simulation Duration: 15 minutes (configurable)
+        - Device Count: 2 pre-configured devices
+        
+    Execution Flow:
+        1. Display startup banner with Sparkplug B compliance notice
+        2. Configure MQTT broker connection parameters
+        3. Create multi-device Sparkplug B simulator instance
+        4. Start concurrent device simulations
+        5. Handle keyboard interrupt for graceful shutdown
+        6. Ensure all devices disconnect cleanly
+        
+    Sparkplug B Features:
+        - Independent sequence number management per device
+        - Metric aliases aligned with database schema
+        - QoS 1 reliable message delivery
+        - Protocol-compliant payload structures
+    """
     print("🌊⚡ 多設備 Sparkplug B 水位計模擬器啟動中...")
     print("=" * 60)
     print("符合 Sparkplug B 規範的 MQTT 數據傳輸")

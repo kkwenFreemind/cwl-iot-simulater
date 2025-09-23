@@ -1,5 +1,7 @@
 # 🌊 Community Water Level IoT Simulator
 
+> 🌍 **Language / 語言**: [English](README.md) | [中文](README_CN.md)
+
 A comprehensive IoT simulation suite for water level monitoring systems, implementing industry-standard Sparkplug B protocol with MQTT connectivity.
 
 ## 🚀 Features
@@ -40,15 +42,18 @@ cwl-iot-simulater/
 ## ⚙️ Installation
 
 ### Prerequisites
+
 - Python 3.7+
 - MQTT Broker (EMQX recommended)
 
 ### Dependencies
+
 ```bash
 pip install paho-mqtt
 ```
 
 ### Quick Start
+
 ```bash
 # Clone the repository
 git clone https://github.com/kkwenFreemind/cwl-iot-simulater.git
@@ -80,12 +85,14 @@ MQTT_CONFIG = {
 ## 🌊 Device Configuration
 
 Each device is configured with:
+
 - **Device ID**: Unique identifier (UUID format)
 - **MQTT Client ID**: MQTT connection identifier
 - **Credentials**: Username and password for broker authentication
 - **Topic**: Telemetry data publishing endpoint
 
 Example configuration:
+
 ```python
 {
     'device_id': '9d3e50ea-e160-4e59-a98e-6b13f51e5e1f',
@@ -127,11 +134,13 @@ Example configuration:
 ## 🎯 Key Features
 
 ### Real-time Data Simulation
+
 - **Water Level**: Dynamic fluctuations using sine wave patterns with realistic noise
 - **Battery Voltage**: Simulated lithium battery discharge (3.2V - 4.1V)
 - **Signal Strength**: Variable RSSI values (-90dBm to -40dBm)
 
 ### Sparkplug B Compliance
+
 - ✅ Metric aliases for payload optimization
 - ✅ Millisecond timestamps for precision
 - ✅ Sequence number management (0-255 rotation)
@@ -139,6 +148,7 @@ Example configuration:
 - ✅ Proper data type declarations
 
 ### Production Features
+
 - **Logging**: Comprehensive logging with configurable levels
 - **Error Handling**: Graceful error recovery and reporting
 - **Signal Handling**: Clean shutdown on interruption
@@ -147,6 +157,7 @@ Example configuration:
 ## 🔧 Configuration Options
 
 ### Simulation Parameters
+
 ```python
 SIMULATION_CONFIG = {
     'max_water_level': 500.0,      # Maximum water level (cm)
@@ -161,6 +172,7 @@ SIMULATION_CONFIG = {
 ## 🌐 Integration
 
 This simulator is designed to integrate with:
+
 - **EMQX MQTT Broker**: Enterprise-grade MQTT messaging
 - **PostgreSQL**: Database with `iot_metric_definitions` table
 - **Eclipse Sparkplug B**: Industrial IoT standard protocol
@@ -171,6 +183,8 @@ This simulator is designed to integrate with:
 - [Environment Setup](doc/env.md) - Device credentials and configuration
 - [Project Planning](doc/plan/) - Development phases and specifications
 - [Python Implementation](python/README.md) - Detailed Python documentation
+  - [English Version](python/README_EN.md) - Python docs in English
+  - [中文版本](python/README_ZH.md) - Python docs in Chinese
 
 ## 🤝 Contributing
 
