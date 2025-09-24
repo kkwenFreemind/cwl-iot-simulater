@@ -309,6 +309,8 @@ class SparkplugBDevice:
         self.client.on_publish = self._on_publish
         
         # Sparkplug B 度量別名定義 (根據數據庫 iot_metric_definitions)
+        # 注意: alias 是數字形式的別名，用於減少 MQTT payload 大小
+        # 這是 Sparkplug B 規範的要求，不是字符串別名
         self.metric_aliases = {
             "WaterLevel": 1,        # ID: 1, 別名: WL, 單位: CENTIMETER
             "BatteryVoltage": 3,    # ID: 3, 別名: BAT_V, 單位: VOLT  

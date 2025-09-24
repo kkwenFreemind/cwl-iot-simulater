@@ -9,20 +9,23 @@ Sparkplug B protocol standards including metric aliases, sequence numbers, and
 proper data type declarations.
 
 Key Features:
-    - Full Sparkplug B protocol compliance
+    - Full Sparkplug B protocol compliance with Protobuf encoding
     - Real-time MQTT data transmission with QoS 1
     - Dynamic water level simulation using mathematical models
     - Battery voltage monitoring with realistic discharge patterns
     - Signal strength (RSSI) simulation with environmental factors
     - Comprehensive error handling and logging
     - Database schema alignment with iot_metric_definitions table
+    - Proper NBIRTH/NDATA message flow
 
 Technical Specifications:
     - Water level measurement in centimeters (Float precision)
     - Battery voltage monitoring in volts (3.0V-4.2V range)
     - Signal strength measurement in dBm (-100dBm to -30dBm range)
     - Sparkplug B sequence number management (0-255 rotation)
-    - MQTT QoS 1 reliable message delivery
+    - MQTT QoS 1 reliable message delivery for NDATA
+    - MQTT QoS 0 for NBIRTH messages
+    - Google Protocol Buffers encoding for true Sparkplug B compliance
     - Configurable transmission intervals
 
 Author: Chang Xiu-Wen, AI-Enhanced
@@ -32,7 +35,8 @@ License: MIT
 
 Dependencies:
     - paho-mqtt: MQTT client library for Python
-    - json: JSON data serialization
+    - tahu: Eclipse Tahu Python implementation for Sparkplug B Protobuf encoding
+    - json: JSON data serialization (for logging only)
     - math: Mathematical functions for realistic simulation
 
 Usage:
@@ -51,6 +55,8 @@ import logging
 import math
 from datetime import datetime
 import paho.mqtt.client as mqtt
+from tahu import sparkplug_b
+from tahu.sparkplug_b_pb2 import Payload
 
 # 設置日誌
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -60,11 +66,11 @@ class SparkplugBWaterLevelSimulator:
     def __init__(self, device_config):
         """
         Initialize the Sparkplug B water level simulator with device configuration.
-        
+
         Sets up MQTT client connection, authentication parameters, simulation variables,
         and Sparkplug B protocol compliance settings. Configures callback handlers for
         connection events and establishes baseline simulation parameters.
-        
+
         Args:
             device_config (dict): Device configuration dictionary containing:
                 - device_id (str): Unique device identifier
@@ -74,7 +80,9 @@ class SparkplugBWaterLevelSimulator:
                 - topic (str): MQTT telemetry topic for data publication
                 - broker_host (str, optional): MQTT broker address (default: 'localhost')
                 - broker_port (int, optional): MQTT broker port (default: 1883)
-                
+                - community_id (int, optional): Sparkplug B community ID (default: 1)
+                - edge_node_id (str, optional): Sparkplug B edge node identifier (default: 'default_edge')
+
         Raises:
             KeyError: If required configuration parameters are missing
             ValueError: If configuration parameters contain invalid values
@@ -83,13 +91,24 @@ class SparkplugBWaterLevelSimulator:
         self.client_id = device_config['client_id']
         self.username = device_config['username']
         self.password = device_config['password']
-        self.topic = device_config['topic']
         self.broker_host = device_config.get('broker_host', 'localhost')
         self.broker_port = device_config.get('broker_port', 1883)
+        self.community_id = device_config.get('community_id', 1)
+        self.edge_node_id = device_config.get('edge_node_id', 'default_edge')
         
-        # MQTT 客戶端設置
+        # Sparkplug B Topic 格式
+        self.nbirt_topic = f"spBv1.0/{self.community_id}/NBIRTH/{self.client_id}"
+        self.ndata_topic = f"spBv1.0/{self.community_id}/NDATA/{self.client_id}"
+        self.state_topic = f"spBv1.0/STATE/{self.community_id}/{self.client_id}"
+        
+        # MQTT 客戶端設置 - 添加 LWT (Last Will and Testament)
+        will_payload = json.dumps({
+            "timestamp": int(time.time() * 1000),
+            "state": "OFFLINE"
+        })
         self.client = mqtt.Client(client_id=self.client_id, protocol=mqtt.MQTTv311)
         self.client.username_pw_set(self.username, self.password)
+        self.client.will_set(self.state_topic, will_payload, qos=0, retain=True)
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
         self.client.on_publish = self._on_publish
@@ -106,6 +125,8 @@ class SparkplugBWaterLevelSimulator:
         self.send_interval = 5
         
         # Sparkplug B 度量別名定義 (根據數據庫 iot_metric_definitions)
+        # 注意: alias 是數字形式的別名，用於減少 MQTT payload 大小
+        # 這是 Sparkplug B 規範的要求，不是字符串別名
         self.metric_aliases = {
             "WaterLevel": 1,        # ID: 1, 別名: WL, 單位: CENTIMETER
             "BatteryVoltage": 3,    # ID: 3, 別名: BAT_V, 單位: VOLT  
@@ -179,7 +200,7 @@ class SparkplugBWaterLevelSimulator:
         """
         return int(time.time() * 1000)
         
-    def create_sparkplug_metric(self, name, value, data_type, engineering_units=None, description=None):
+    def create_sparkplug_metric(self, name, value, data_type, engineering_units=None, description=None, for_nbirt=True):
         """
         Create a Sparkplug B compliant metric with proper structure and metadata.
         
@@ -194,68 +215,104 @@ class SparkplugBWaterLevelSimulator:
             data_type (str): Sparkplug B data type ("Float", "Int32", etc.)
             engineering_units (str, optional): Engineering units for the metric
             description (str, optional): Human-readable description of the metric
+            for_nbirt (bool): True for NBIRTH payload, False for NDATA payload
             
         Returns:
             dict: Complete Sparkplug B metric object with all required fields
-            
-        Metric Structure:
-            - name: Human-readable metric identifier
-            - alias: Numeric alias for efficient transmission
-            - timestamp: Millisecond precision timestamp
-            - dataType: Sparkplug B data type specification
-            - value: Actual metric measurement value
-            - properties: Optional metadata (units, descriptions)
         """
         current_timestamp = self.get_current_timestamp_ms()
         
-        metric = {
-            "name": name,
-            "alias": self.metric_aliases.get(name, 0),
-            "timestamp": current_timestamp,
-            "dataType": data_type,
-            "value": value
+        # 映射字符串數據類型到 tahu MetricDataType
+        type_mapping = {
+            "Float": sparkplug_b.MetricDataType.Float,
+            "Int32": sparkplug_b.MetricDataType.Int32,
+            "Double": sparkplug_b.MetricDataType.Double,
+            "Boolean": sparkplug_b.MetricDataType.Boolean,
+            "String": sparkplug_b.MetricDataType.String
         }
+        metric_type = type_mapping.get(data_type, sparkplug_b.MetricDataType.String)
         
-        # 添加屬性
-        if engineering_units or description:
-            metric["properties"] = {}
-            if engineering_units:
-                metric["properties"]["Engineering Units"] = {
-                    "type": "String",
-                    "value": engineering_units
-                }
-            if description:
-                metric["properties"]["Description"] = {
-                    "type": "String",
-                    "value": description
-                }
+        # NBIRTH 需要完整定義，NDATA 只需 alias 和 value
+        if for_nbirt:
+            metric = {
+                "name": name,
+                "alias": self.metric_aliases.get(name, 0),
+                "timestamp": current_timestamp,
+                "dataType": metric_type,
+                "value": value
+            }
+            
+            # 添加屬性
+            if engineering_units or description:
+                metric["properties"] = {}
+                if engineering_units:
+                    metric["properties"]["Engineering Units"] = {
+                        "type": "String",
+                        "value": engineering_units
+                    }
+                if description:
+                    metric["properties"]["Description"] = {
+                        "type": "String",
+                        "value": description
+                    }
+        else:
+            # NDATA 只包含 alias 和 value
+            metric = {
+                "alias": self.metric_aliases.get(name, 0),
+                "timestamp": current_timestamp,
+                "value": value
+            }
                 
         return metric
         
-    def generate_sparkplug_payload(self):
+    def create_nbirt_payload(self):
         """
-        Generate complete Sparkplug B payload with realistic sensor data.
+        Create NBIRTH payload for Sparkplug B device birth announcement.
         
-        Creates a full Sparkplug B compliant payload containing water level,
-        battery voltage, and signal strength metrics with realistic simulation
-        patterns. Implements mathematical models for natural water level fluctuations
-        and environmental variations while maintaining database schema alignment.
+        NBIRTH (Node Birth) message declares the device is online and defines
+        all metrics with their complete metadata including names, aliases, data types,
+        and properties. This must be sent before any NDATA messages.
         
         Returns:
-            dict: Complete Sparkplug B payload with metrics array and sequence number
-            
-        Simulation Features:
-            - Sine wave water level patterns with configurable amplitude
-            - Random noise for realistic sensor variation
-            - Battery voltage within Li-ion battery operating range (3.0V-4.2V)
-            - Signal strength variation based on environmental conditions (-100dBm to -30dBm)
-            - Automatic sequence number management with rollover (0-255)
-            
-        Database Alignment:
-            - WaterLevel: Float in centimeters (metric ID: 1)
-            - BatteryVoltage: Float in volts (metric ID: 3)
-            - SignalStrength: Int32 in dBm (metric ID: 4)
+            Payload: Complete NBIRTH payload with all metric definitions (Protobuf)
         """
+        # 使用 tahu 庫創建 NBIRTH payload
+        payload = sparkplug_b.getNodeBirthPayload()
+        
+        # 模擬當前值作為初始值
+        water_level_cm = self.base_water_level * 100
+        battery_voltage = round(random.uniform(3.2, 4.1), 2)
+        signal_strength = random.randint(-90, -40)
+        
+        # 添加度量到 payload
+        sparkplug_b.addMetric(payload, "WaterLevel", 1, sparkplug_b.MetricDataType.Float, water_level_cm)
+        sparkplug_b.addMetric(payload, "BatteryVoltage", 3, sparkplug_b.MetricDataType.Float, battery_voltage)
+        sparkplug_b.addMetric(payload, "SignalStrength", 4, sparkplug_b.MetricDataType.Float, float(signal_strength))
+        
+        # 設置序列號
+        payload.seq = self.seq_number
+        
+        # NBIRTH 後增加序列號
+        self.seq_number += 1
+        if self.seq_number > 255:
+            self.seq_number = 0
+            
+        return payload
+        
+    def create_ndata_payload(self):
+        """
+        Create NDATA payload for Sparkplug B data transmission.
+        
+        NDATA (Node Data) messages contain only the metric values using aliases
+        for efficient transmission. Names, data types, and properties are not
+        included as they were defined in the NBIRTH message.
+        
+        Returns:
+            Payload: NDATA payload with metric values only (Protobuf)
+        """
+        # 使用 tahu 庫創建 NDATA payload
+        payload = Payload()  # 創建空的 Payload 對象
+        
         # 模擬水位波動
         time_factor = time.time() / 100
         sine_wave = math.sin(time_factor) * 0.1
@@ -264,51 +321,23 @@ class SparkplugBWaterLevelSimulator:
         self.current_level = self.base_water_level + sine_wave + random_noise
         self.current_level = max(0.0, min(3.0, self.current_level))
         
-        # 轉換為公分 (數據庫要求 CENTIMETER)
-        water_level_cm = self.current_level * 100  # 米轉公分
+        # 轉換為公分
+        water_level_cm = self.current_level * 100
         
-        # 創建度量項列表 (根據數據庫 iot_metric_definitions)
-        metrics = []
+        # 添加度量到 payload (NDATA 只用 alias 和 value)
+        sparkplug_b.addMetric(payload, "", 1, sparkplug_b.MetricDataType.Float, round(water_level_cm, 2))
         
-        # 1. 水位 (WaterLevel) - ID: 1, 別名: WL, 單位: CENTIMETER, 數據類型: Float
-        metrics.append(self.create_sparkplug_metric(
-            "WaterLevel",
-            round(water_level_cm, 2),  # 公分，保留2位小數
-            "Float",
-            "CENTIMETER",
-            "Water level measurement in centimeters"
-        ))
-        
-        # 2. 電池電壓 (BatteryVoltage) - ID: 3, 別名: BAT_V, 單位: VOLT, 數據類型: Float
-        # 模擬鋰電池電壓範圍 3.0V - 4.2V
         battery_voltage = round(random.uniform(3.2, 4.1), 2)
-        metrics.append(self.create_sparkplug_metric(
-            "BatteryVoltage",
-            battery_voltage,
-            "Float",
-            "VOLT",
-            "Battery voltage in volts"
-        ))
+        sparkplug_b.addMetric(payload, "", 3, sparkplug_b.MetricDataType.Float, battery_voltage)
         
-        # 3. 信號強度 (SignalStrength) - ID: 4, 別名: RSSI, 單位: DBM, 數據類型: Int32
-        metrics.append(self.create_sparkplug_metric(
-            "SignalStrength",
-            random.randint(-90, -40),  # dBm 範圍
-            "Int32",
-            "DBM",
-            "Received Signal Strength Indicator in dBm"
-        ))
+        sparkplug_b.addMetric(payload, "", 4, sparkplug_b.MetricDataType.Float, float(random.randint(-90, -40)))
         
-        # 構建完整的 Sparkplug B 載荷
-        payload = {
-            "timestamp": self.get_current_timestamp_ms(),
-            "metrics": metrics,
-            "seq": self.seq_number
-        }
+        # 設置序列號
+        payload.seq = self.seq_number
         
         # 增加序列號
         self.seq_number += 1
-        if self.seq_number > 255:  # Sparkplug B 序列號範圍 0-255
+        if self.seq_number > 255:
             self.seq_number = 0
             
         return payload
@@ -328,26 +357,40 @@ class SparkplugBWaterLevelSimulator:
         self.client.loop_stop()
         self.client.disconnect()
         
-    def send_sparkplug_data(self, payload):
+    def send_sparkplug_data(self, topic, payload, message_type="NDATA"):
         """
-        發送 Sparkplug B 格式數據到 MQTT Topic
+        發送 Sparkplug B 格式數據到指定的 MQTT Topic
         
         Args:
-            payload (dict): Sparkplug B 格式的數據載荷
+            topic (str): MQTT topic to publish to
+            payload (Payload): Sparkplug B Protobuf payload
+            message_type (str): 消息類型 ("NBIRTH" 或 "NDATA")
         """
         try:
-            json_payload = json.dumps(payload, ensure_ascii=False, indent=2)
-            result = self.client.publish(self.topic, json_payload, qos=1)
+            # 序列化 Protobuf payload 為二進制數據
+            binary_payload = payload.SerializeToString()
+            
+            qos = 0 if message_type == "NBIRTH" else 1
+            result = self.client.publish(topic, binary_payload, qos=qos)
             
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                water_level_cm = None
-                for metric in payload['metrics']:
-                    if metric['name'] == 'WaterLevel':
-                        water_level_cm = metric['value']
-                        break
-                
-                logger.info(f"Sparkplug B 數據已發送 - 水位: {water_level_cm}cm, 序列號: {payload['seq']}")
-                logger.debug(f"Topic: {self.topic}")
+                if message_type == "NBIRTH":
+                    logger.info(f"Sparkplug B {message_type} 已發送 - 設備: {self.device_id}")
+                else:
+                    # 從 Protobuf payload 中提取水位值進行顯示
+                    water_level_cm = None
+                    for metric in payload.metrics:
+                        if metric.alias == 1:  # WaterLevel alias
+                            if metric.HasField('float_value'):
+                                water_level_cm = metric.float_value
+                            elif metric.HasField('double_value'):
+                                water_level_cm = metric.double_value
+                            else:
+                                water_level_cm = metric.value
+                            break
+                    
+                    logger.info(f"Sparkplug B {message_type} 已發送 - 水位: {water_level_cm}cm, 序列號: {payload.seq}")
+                logger.debug(f"Topic: {topic}")
             else:
                 logger.error(f"發送失敗，錯誤碼: {result.rc}")
                 
@@ -358,6 +401,11 @@ class SparkplugBWaterLevelSimulator:
         """
         開始 Sparkplug B 模擬數據發送
         
+        按照 Sparkplug B 規範：
+        1. 連線到 MQTT Broker
+        2. 發送 NBIRTH 訊息宣告設備上線
+        3. 循環發送 NDATA 訊息
+        
         Args:
             duration_minutes (int, optional): 運行時間(分鐘)，None 表示無限運行
         """
@@ -365,17 +413,30 @@ class SparkplugBWaterLevelSimulator:
             return
             
         logger.info(f"開始 Sparkplug B 水位數據模擬 - 設備: {self.device_id}")
+        logger.info(f"Community ID: {self.community_id}, Edge Node ID: {self.edge_node_id}")
         logger.info(f"發送間隔: {self.send_interval}秒")
-        logger.info(f"Topic: {self.topic}")
+        logger.info(f"NBIRTH Topic: {self.nbirt_topic}")
+        logger.info(f"NDATA Topic: {self.ndata_topic}")
         
-        start_time = time.time()
-        end_time = start_time + (duration_minutes * 60) if duration_minutes else None
+        # 等待連線建立
+        time.sleep(1)
         
         try:
+            # 1. 發送 NBIRTH 訊息宣告設備上線
+            nbirth_payload = self.create_nbirt_payload()
+            self.send_sparkplug_data(self.nbirt_topic, nbirth_payload, "NBIRTH")
+            
+            # 等待 NBIRTH 發送完成
+            time.sleep(0.5)
+            
+            # 2. 開始循環發送 NDATA
+            start_time = time.time()
+            end_time = start_time + (duration_minutes * 60) if duration_minutes else None
+            
             while True:
-                # 生成並發送 Sparkplug B 數據
-                sparkplug_payload = self.generate_sparkplug_payload()
-                self.send_sparkplug_data(sparkplug_payload)
+                # 生成並發送 NDATA
+                ndata_payload = self.create_ndata_payload()
+                self.send_sparkplug_data(self.ndata_topic, ndata_payload, "NDATA")
                 
                 # 檢查是否已達到運行時間
                 if end_time and time.time() > end_time:
@@ -398,15 +459,16 @@ def main():
     print("🌊 Sparkplug B 水位計模擬器啟動中...")
     print("=" * 50)
     
-    # 設備配置 (從 env.md 獲取)
+    # 設備配置 (從資料庫 iot_device 表獲取)
     device_config = {
-        'device_id': '9d3e50ea-e160-4e59-a98e-6b13f51e5e1f',
-        'client_id': 'client_9d3e50ea',
-        'username': 'device_2_9d3e50ea',
-        'password': 'b1652e4bac404628',
-        'topic': 'tenants/2/devices/9d3e50ea/telemetry',
+        'device_id': '44547ced-e7fa-489b-8f04-891a30a0adb6',
+        'client_id': 'spb_1_2_sb_water_device_1',  # 使用 mqtt_client_id 作為 client_id
+        'username': 'device_2_44547ced',
+        'password': '5e5d44bd67874f0c',
         'broker_host': 'localhost',  # 請修改為您的 EMQX Broker 地址
-        'broker_port': 1883
+        'broker_port': 1883,
+        'community_id': 1,  # 從資料庫獲取
+        'edge_node_id': 'sb_water_device_1'  # 使用 device_name 作為 edge node id
     }
     
     # 創建並啟動 Sparkplug B 模擬器
