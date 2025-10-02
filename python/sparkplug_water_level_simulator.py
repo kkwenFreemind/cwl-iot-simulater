@@ -14,6 +14,8 @@ Key Features:
     - Dynamic water level simulation using mathematical models
     - Battery voltage monitoring with realistic discharge patterns
     - Signal strength (RSSI) simulation with environmental factors
+    - Rain event simulation with gradual water level rise and fall
+    - Alert level monitoring (1.0 meter threshold)
     - Comprehensive error handling and logging
     - Database schema alignment with iot_metric_definitions table
     - Proper NBIRTH/NDATA message flow
@@ -97,9 +99,9 @@ class SparkplugBWaterLevelSimulator:
         self.edge_node_id = device_config.get('edge_node_id', 'default_edge')
         
         # Sparkplug B Topic 格式
-        self.nbirt_topic = f"spBv1.0/{self.community_id}/NBIRTH/{self.client_id}"
-        self.ndata_topic = f"spBv1.0/{self.community_id}/NDATA/{self.client_id}"
-        self.state_topic = f"spBv1.0/STATE/{self.community_id}/{self.client_id}"
+        self.nbirt_topic = f"spBv1.0/{self.community_id}/NBIRTH/{self.device_id}"
+        self.ndata_topic = f"spBv1.0/{self.community_id}/NDATA/{self.device_id}"
+        self.state_topic = f"spBv1.0/STATE/{self.community_id}/{self.device_id}"
         
         # MQTT 客戶端設置 - 添加 LWT (Last Will and Testament)
         will_payload = json.dumps({
@@ -118,11 +120,19 @@ class SparkplugBWaterLevelSimulator:
         self.max_variation = 0.3     # 最大變化幅度 (米)
         self.current_level = self.base_water_level
         
+        # 暴雨事件模擬參數
+        self.rain_event_active = False  # 暴雨事件是否活躍
+        self.rain_start_time = None     # 暴雨開始時間
+        self.rain_duration = 0          # 暴雨持續時間 (秒)
+        self.rain_rise_rate = 0.02      # 暴雨期間水位上升速率 (米/秒)
+        self.alert_level = 1.0          # 警戒水位 (米)
+        self.rain_probability = 0.05    # 每次檢查時觸發暴雨的機率 (5%)
+        
         # Sparkplug B 序列號
         self.seq_number = 0
         
         # 發送間隔 (秒)
-        self.send_interval = 5
+        self.send_interval = 60
         
         # Sparkplug B 度量別名定義 (根據數據庫 iot_metric_definitions)
         # 注意: alias 是數字形式的別名，用於減少 MQTT payload 大小
@@ -182,6 +192,39 @@ class SparkplugBWaterLevelSimulator:
     def _on_publish(self, client, userdata, mid):
         """MQTT 發布回調"""
         logger.debug(f"消息已發布，消息ID: {mid}")
+        
+    def check_and_update_rain_event(self):
+        """
+        檢查並更新暴雨事件狀態
+        
+        根據機率隨機觸發暴雨事件，或檢查現有暴雨事件是否結束。
+        暴雨期間水位會持續上升，直到達到警戒值。
+        暴雨結束後，水位會逐漸下降回基礎水位。
+        
+        Returns:
+            bool: 是否有暴雨事件狀態變化
+        """
+        current_time = time.time()
+        status_changed = False
+        
+        if self.rain_event_active:
+            # 檢查暴雨是否結束
+            if current_time - self.rain_start_time >= self.rain_duration:
+                self.rain_event_active = False
+                logger.info(f"暴雨結束 - 水位: {self.current_level:.2f}米")
+                status_changed = True
+        else:
+            # 隨機檢查是否開始暴雨 (5% 機率)
+            if random.random() < self.rain_probability:
+                # 開始暴雨事件
+                self.rain_event_active = True
+                self.rain_start_time = current_time
+                # 暴雨持續 2-5 分鐘
+                self.rain_duration = random.randint(120, 300)
+                logger.info(f"暴雨開始 - 預計持續 {self.rain_duration} 秒")
+                status_changed = True
+                
+        return status_changed
         
     def get_current_timestamp_ms(self):
         """
@@ -313,13 +356,38 @@ class SparkplugBWaterLevelSimulator:
         # 使用 tahu 庫創建 NDATA payload
         payload = Payload()  # 創建空的 Payload 對象
         
-        # 模擬水位波動
-        time_factor = time.time() / 100
-        sine_wave = math.sin(time_factor) * 0.1
-        random_noise = random.uniform(-0.05, 0.05)
+        # 檢查並更新暴雨事件
+        rain_status_changed = self.check_and_update_rain_event()
         
-        self.current_level = self.base_water_level + sine_wave + random_noise
-        self.current_level = max(0.0, min(3.0, self.current_level))
+        if self.rain_event_active:
+            # 暴雨期間：水位持續上升
+            rise_amount = self.rain_rise_rate * self.send_interval  # 根據發送間隔計算上升量
+            self.current_level += rise_amount
+            
+            # 限制在合理範圍內 (不超過警戒值的 1.5 倍)
+            max_level = self.alert_level * 1.5
+            self.current_level = min(self.current_level, max_level)
+            
+            if rain_status_changed:
+                logger.info(f"暴雨期間水位上升 - 當前水位: {self.current_level:.2f}米")
+        else:
+            # 正常天氣：使用正弦波 + 隨機噪聲模擬
+            time_factor = time.time() / 100
+            sine_wave = math.sin(time_factor) * 0.1
+            random_noise = random.uniform(-0.05, 0.05)
+            
+            target_level = self.base_water_level + sine_wave + random_noise
+            
+            # 如果之前有暴雨，水位逐漸下降回基礎水位
+            if self.current_level > target_level:
+                # 緩慢下降 (每60秒下降對應比例)
+                descent_rate = 0.01 * (self.send_interval / 5.0)
+                self.current_level = max(target_level, self.current_level - descent_rate)
+            else:
+                self.current_level = target_level
+            
+            # 確保水位在合理範圍內
+            self.current_level = max(0.0, min(3.0, self.current_level))
         
         # 轉換為公分
         water_level_cm = self.current_level * 100
@@ -376,6 +444,7 @@ class SparkplugBWaterLevelSimulator:
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
                 if message_type == "NBIRTH":
                     logger.info(f"Sparkplug B {message_type} 已發送 - 設備: {self.device_id}")
+                    logger.info(f"發送到 Topic: {topic}")
                 else:
                     # 從 Protobuf payload 中提取水位值進行顯示
                     water_level_cm = None
@@ -390,6 +459,7 @@ class SparkplugBWaterLevelSimulator:
                             break
                     
                     logger.info(f"Sparkplug B {message_type} 已發送 - 水位: {water_level_cm}cm, 序列號: {payload.seq}")
+                    logger.info(f"發送到 Topic: {topic}")
                 logger.debug(f"Topic: {topic}")
             else:
                 logger.error(f"發送失敗，錯誤碼: {result.rc}")

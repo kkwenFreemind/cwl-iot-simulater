@@ -89,7 +89,7 @@ def main():
     print(f"Device ID: {device_config['device_id']}")
     print(f"Client ID: {device_config['client_id']}")
     print(f"Username: {device_config['username']}")
-    print(f"Topic: {device_config['topic']}")
+    print(f"Broker: {device_config['broker_host']}:{device_config['broker_port']}")
     print(f"Community ID: {device_config['community_id']}")
     print(f"Edge Node ID: {device_config['edge_node_id']}")
     print()
